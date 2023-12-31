@@ -1,0 +1,711 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2269
+#
+# Manage the Plex Stack.
+# Spencer Butler <dev@tcos.us>
+# TODO(spencer) Add version to the script
+
+GLOBAL_CONF=global.conf
+if [ -f "$GLOBAL_CONF" ]
+then
+    # shellcheck source=/dev/null
+    . "$GLOBAL_CONF"
+else
+    echo
+    echo "WARN: $GLOBAL_CONF is missing!"
+    echo "Copy global-example.conf to global.conf, and change the settings for your enviornment."
+    echo 
+    echo "Exiting."
+    exit 1
+fi
+
+# TODO(spencer) only invoke the create network script when we bring up containers
+CREATE_NETWORK_SCRIPT=create-plex-stack-networks.sh 
+if [ -f "$CREATE_NETWORK_SCRIPT" ]
+then
+    # shellcheck source=/dev/null
+    . "$CREATE_NETWORK_SCRIPT" 1> /dev/null
+else
+    echo
+    echo "WARN: $CREATE_NETWORK_SCRIPT is missing!"
+    sleep 3
+fi
+
+if CMD_MAKE_DOCS=$(command -v todo-docs-plus)
+then
+    true
+elif CMD_MAKE_DOCS=$(command -v ./todo-docs-plus.py)
+then
+    true
+fi
+
+CMD_JQ=$(command -v jq)
+CMD_CURL=$(command -v curl)
+CMD_TPUT=$(command -v tput)
+
+
+if [ -n "$CMD_TPUT" ]
+then
+    # man  5 terminfo
+    $CMD_TPUT init
+
+    ENDCAP=$($CMD_TPUT sgr0)
+    REV=$($CMD_TPUT rev)
+    BOLD=$($CMD_TPUT bold)
+
+    UNDERLINE=$($CMD_TPUT smul)
+    UNDERLINEOFF=$($CMD_TPUT rmul)
+
+    ITALICS=$($CMD_TPUT sitm)
+    ITALICSOFF=$($CMD_TPUT ritm)
+
+    REDFG=$($CMD_TPUT setaf 196)
+    REDBG=$($CMD_TPUT setab 196)
+    
+    GREENFG=$($CMD_TPUT setaf 46)
+    GREENBG=$($CMD_TPUT setab 46)
+
+    WHITEFG=$($CMD_TPUT setaf 255)
+    WHITEBG=$($CMD_TPUT setab 255)
+
+    BLACKFB=$($CMD_TPUT setaf 0)
+    BLACKBG=$($CMD_TPUT setab 0)
+
+    echo "$ENDCAP" 2>&1
+fi
+
+
+get_help() {
+    # ### TODO(spencer) finish writing `get_help`
+    # ### Args
+    # - function name (optional): Help on failed function call.
+    #
+    # ### Returns
+    # - Help for (optional) funcion, or general USAGE.
+    NAME=$(basename "$0")
+    FOR="$1"
+    retval=0
+
+    if [ -n "$FOR" ] 
+    then
+        echo "Help for \"$FOR\"."
+        echo
+
+        if [ "$FOR" = "report_items" ]
+        then
+            echo "Report for \"enabled|disabled|all\" only."
+            exit 1
+
+        elif [ "$FOR" = "update_template" ]
+        then
+            echo "Unable to find \"$_update_template_FOR\" in STACK_ITEMS."
+            echo "Check for typos and look at the STACK_ITEMS variable."
+            exit 1
+
+        elif [ "$FOR" = "parse_config" ]
+        then
+            echo "Unable to parse config for \"$_parse_config_ITEM\"."
+            echo
+            echo "DEBUG parse_config: \"$_parse_config\"."
+            exit 1
+
+        else
+            echo "No specific help for \"$FOR\."
+        fi
+    else
+        cat  << EOF
+The Plex Stack Manger
+
+USAGE:
+    $NAME -h      This help.
+    $NAME -m      Make documentation. (external script $CMD_MAKE_DOCS)
+EOF
+    fi
+
+    return "$retval"
+}
+
+
+parse_config() {
+    # ### Args
+    # - ITEM: A single item (application name) to parse.
+    # - STACK_ITEMS: A list of `=` delimited lines default: `$STACK_ITEMS`
+    #     - 0: Item name (common name of the item)
+    #     - 1: Item port (`EXPOSE` port of the item)
+    #     - 2: Item provider (linuxserverer,hotio, etc.)
+    #     - 3: Item tag (provider version) default: `:latest``
+    #     - 4: Enabled (bool)
+    # ### Returns
+    # - mapped variables
+    _parse_config_ITEM="$1"
+    retval=0
+
+    if [ -n "${STACK_ITEMS[${_parse_config_ITEM}]}" ]
+    then
+        mapfile -t -d= <<<"${STACK_ITEMS[${_parse_config_ITEM}]}"
+        #mapfile -t -d= < <(echo "$_parse_config_SPLIT")
+        NAME="${_parse_config_ITEM}"
+        # shellcheck disable=SC2034 # We return these variables to the caller.
+        PORT="${MAPFILE[0]}"
+        # shellcheck disable=SC2034 # We return these variables to the caller.
+        PROVIDER="${MAPFILE[1]}"
+        # shellcheck disable=SC2034 # We return these variables to the caller.
+        TAG="${MAPFILE[2]}"
+        # shellcheck disable=SC2034 # We return these variables to the caller.
+        ENABLED="${MAPFILE[3]}"
+
+    else
+        retval=1
+        if [ ! "$3" = -z ]
+        then
+            get_help "parse_config"
+        fi
+    fi
+
+    return "$retval"
+}
+
+
+get_items() {
+    # ### Args
+    # - STACK_ITEMS: An array containing a string of `=` delimited lines
+    #
+    # ### Returns
+    # - ALL_ITEMS: A list of all items.
+    # - ENABLED_ITEMS: A list of all enabled items.
+    # - DISABLED_ITEMS: A list of all disabled items.
+    retval=0
+
+    for ITEM in "${!STACK_ITEMS[@]}"
+    do
+        NAME="${ITEM}"
+        ENABLED="${STACK_ITEMS[$ITEM]##*=}"
+        ALL_ITEMS="$ALL_ITEMS $NAME"
+
+        if "$ENABLED"
+        then
+            ENABLED_ITEMS="$ENABLED_ITEMS $NAME"
+
+        else
+            DISABLED_ITEMS="$DISABLED_ITEMS $NAME"
+        fi
+    done
+
+    ALL_ITEMS="${ALL_ITEMS/ /}"
+    ENABLED_ITEMS="${ENABLED_ITEMS/ /}"
+    DISABLED_ITEMS="${DISABLED_ITEMS/ /}"
+
+    return "$retval"
+}
+
+
+is_item_enabled() {
+    # ### Args
+    # - ITEM: Test if `ITEM` is enabled.
+    #
+    # ### Returns
+    # - bool: Is an enabled ITEM.
+    retval=1
+    _is_item_enabled_ITEM="$1"
+    get_items
+    echo "$DISABLED_ITEMS"
+
+    [[ "$_is_item_enabled_ITEM" =~ $ENABLED_ITEMS ]] && retval=0
+
+    return "$retval"
+}
+
+
+report_items() {
+    # ### TODO(spencer) Prettify the report.
+    #
+    # ### Arg:
+    # - Query: One of enabled, disabled, or all.
+    #
+    # ### Returns
+    # - ALL_ITEMS: If Query is all.
+    # - ENABLED_ITEMS: If Query is enabled.
+    # - DISABLED_ITEMS: If Query is disabled.
+    _report_items_query="$1"
+    _report_items_queries="^(enabled|disabled|all)$"
+    retval=0
+
+    if [[ "$_report_items_query" =~ $_report_items_queries ]]
+    then
+        get_items
+
+        if [ "$_report_items_query" == enabled ]
+        then
+            ITEMS="$ENABLED_ITEMS"
+
+        elif [ "$_report_items_query" == disabled ]
+        then
+            ITEMS="$DISABLED_ITEMS"
+
+        elif [ "$_report_items_query" == all ]
+        then
+            ITEMS="$ALL_ITEMS"
+        fi
+
+        for ITEM in $ITEMS
+        do
+            parse_config "$ITEM"
+            echo "$ITEM $PORT $PROVIDER $TAG $ENABLED"
+        done
+    else
+        retval=1
+        get_help "report_items"
+    fi
+
+    return "$retval"
+}
+
+
+update_template() {
+    # ### Notes
+    # - The TZ and PROVIDER variables contain `/` which
+    # need to be escaped for `sed`. This is done with 
+    # bash's variable expansion. It's ugly, but it works.
+    #
+    # ### Args
+    # - ITEM:  An item (app) to prepare a template for.
+    #
+    # ### Returns
+    # - ITEM/.env, ITEM/docker-compose: New docker compose
+    # files, ready to run.
+    _update_template_FOR="$1"
+    _update_template_DIR=TEMPLATE
+    _update_template_ENV=.env
+    _update_template_DC=docker-compose.yaml
+    _update_template_SPECIALS="^(traefik|plex)$"
+    retval=0
+
+    if [ "$_update_template_FOR" = all ]
+    then
+        _update_template_FOR="$ENABLED_ITEMS"
+    fi
+
+    for ITEM in $_update_template_FOR
+    do
+        _update_template_DIR=TEMPLATE
+        if [[ "$ITEM" =~ ${_update_template_SPECIALS} ]]
+        then
+            echo "$ITEM is a special template"
+            echo -e "\tThis feature is still a WiP."
+
+            _update_template_DIR="${_update_template_DIR}/${ITEM}"
+            #if [ ! -d "$_update_template_DIR" ]
+            #then
+            #    echo -e "\tYou need to craft a special template for $ITEM"
+            #else
+            #    echo -e "\tYou have the $ITEM $_update_template_DIR dir, Still a WiP."
+            #fi
+        fi
+
+        if parse_config "$ITEM"
+        then
+            if [ ! -d "$ITEM" ] || [ ! -d "${ITEM}/config" ] || [ ! -d "${ITEM}/data" ]
+            then
+                mkdir -p "${ITEM}"/{config,data}
+            fi
+
+            sed -e "s/TEMPLATE_NAME/$NAME/" \
+                -e "s/TEMPLATE_PROVIDER/${PROVIDER//\//\\/}/" \
+                -e "s/TEMPLATE_TAG/$TAG/" \
+                -e "s/TEMPLATE_PORT/$PORT/" \
+                -e "s/TEMPLATE_PUID/$PUID/" \
+                -e "s/TEMPLATE_PGID/$PGID/" \
+                -e "s/TEMPLATE_TZ/${TZ//\//\\/}/" \
+                -e "s/TEMPLATE_MEDIA_DATA_DIR/${MEDIA_DATA_DIR//\//\\/}/" \
+                -e "s/TEMPLATE_CONTAINER_DATA_DIR/${CONTAINER_DATA_DIR//\//\\/}/" \
+                -e "s/TEMPLATE_CONFIG_DIR/${CONFIG_DIR//\//\\/}/" \
+                -e "s/TEMPLATE_DOMAIN_NAME/$DOMAIN_NAME/" \
+                -e "s/TEMPLATE_TRAEFIK_CREDENTIALS/\'${TRAEFIK_CREDENTIALS//\//\\/}\'/" \
+                -e "s/TEMPLATE_TRAEFIK_LOG_LEVEL/$TRAEFIK_LOG_LEVEL/" \
+                -e "s/TEMPLATE_SWARM_MODE/$SWARM_MODE/" \
+                -e "s/TEMPLATE_PORTS_MODE/$PORTS_MODE/" \
+                -e "s/TEMPLATE_ACME_EMAIL/$ACME_EMAIL/" \
+                -e "s/TEMPLATE_ACME_PROVIDER/$ACME_PROVIDER/" \
+                -e "s/TEMPLATE_ACME_STORAGE/${ACME_STORAGE//\//\\/}/" \
+                -e "s/TEMPLATE_ACME_RESOLVERS/$ACME_RESOLVERS/" \
+                -e "s/TEMPLATE_ACME_DELAY/$ACME_DELAY/" \
+                -e "s/TEMPLATE_GCLOUD_AUTH/${GCLOUD_AUTH//\//\\/}/" \
+                -e "s/TEMPLATE_GCE_SERVICE_ACCOUNT_SECRETS_FILE/${GCE_SERVICE_ACCOUNT_SECRETS_FILE//\//\\/}/" \
+            "${_update_template_DIR}/${_update_template_ENV}" \
+            > "${ITEM}/.env"
+
+            sed -e "s/TEMPLATE_NAME/$NAME/" \
+            "${_update_template_DIR}/${_update_template_DC}" \
+            > "${ITEM}/docker-compose.yaml"
+
+            echo "Updated the template for ${NAME}."
+        else
+            retval=1
+            get_help "update_template"
+        fi
+    done
+}
+
+
+item_help() {
+    # ### TODO(spencer) Finish writing `item_help`
+    #
+    # ### Args
+    # - ITEM: Help for an item.
+    #
+    # ### Returns
+    # - USAGE: Usage for `$0 ITEM`
+    cat << EOF
+Manage an item.
+    $(basename "$0") $1 up          Try to bring an item up.
+    $(basename "$0") $1 down        Try to bring an item down.
+    $(basename "$0") $1 restart     Try to restart an item.
+    $(basename "$0") $1 pull        Pull the latest container image.
+    $(basename "$0") $1 status      Pull the latest container image.
+    $(basename "$0") $1 update      Update item config from a template.
+    $(basename "$0") $1 inspect     Docker inspect the item container.
+EOF
+    exit 0
+}
+
+
+item_up() {
+    # ### Args
+    # - ITEM: An item (container) to bring up.
+    #
+    # ### Returns
+    # - None: Executes `docker compose --file FILE up --detach &`.
+    _item_up_ITEM="$1"
+    _item_up_UP="$2"
+    _item_up_ID=$(docker ps --quiet --filter name="$1")
+
+    if [ "$_item_up_ITEM" = all ]
+    then
+        _item_up_ITEM="$ENABLED_ITEMS"
+    fi
+
+    if [ -n "$_item_up_UP" ]
+    then
+        [ -n "$_item_up_ID" ] && return 0 || return 1
+    fi
+
+    # TODO(spencer) Make sure ITEM/ directory exists before bringing the container up.
+    for ITEM in $_item_up_ITEM
+    do
+        if item_up "$ITEM" up
+        then
+            echo "$ITEM is currently up"
+        else
+            docker compose --file "${ITEM}/docker-compose.yaml" up --detach &
+        fi
+    done
+}
+
+
+item_down() {
+    # ### Args
+    # - ITEM: An item (container) to bring down.
+    #
+    # ### Returns
+    # - None: Executes `docker compose --file FILE down &`.
+    _item_down_ITEM="$1"
+
+    if [ "$_item_down_ITEM" = all ]
+    then
+        _item_down_ITEM="$ENABLED_ITEMS"
+    fi
+
+    for ITEM in $_item_down_ITEM
+    do
+        if item_up "$ITEM" up
+        then
+            docker compose --file "${ITEM}/docker-compose.yaml" down &
+        else
+            echo "$ITEM is currently down."
+        fi
+    done
+}
+
+
+item_restart() {
+    # ### Args
+    # - ITEM: An item (container) to restart.
+    #
+    # ### Returns
+    # - None: Executes `docker compose --file FILE restart &`
+  _item_restart_ITEM="$1"
+
+    if [ "$_item_restart_ITEM" = all ]
+    then
+        _item_restart_ITEM="$ENABLED_ITEMS"
+    fi
+
+    for ITEM in $_item_restart_ITEM
+    do
+        if item_up "$ITEM" up
+        then
+            docker compose --file "${ITEM}/docker-compose.yaml" restart &
+        else
+            echo "$ITEM is currently down."
+        fi
+    done
+}
+
+
+item_pull() {
+    # ### Args
+    # - ITEM: An item (container) to pull latest image.
+    #
+    # ### Returns
+    # - None: Executes `docker compose --file FILE pull &`
+     _item_pull_ITEM="$1"
+
+    if [ "$_item_pull_ITEM" = all ]
+    then
+        _item_pull_ITEM="$ENABLED_ITEMS"
+    fi
+
+    for ITEM in $_item_pull_ITEM
+    do
+        docker compose --file "${ITEM}/docker-compose.yaml" pull &
+    done
+}
+
+
+item_inspect() {
+    # ### Args
+    # - ITEM: An item (container) to inspect.
+    #
+    # ### Returns
+    # - None: Executes `docker inspect ID`.
+    # - None: Warning if trying to to inspect `all` containers.
+     _item_inspect_ITEM="$1"
+
+    if [ "$_item_inspect_ITEM" = all ]
+    then
+        echo "Inspect individual containers by name."
+        return 0
+    fi
+
+    _item_inspect_ID=$(docker ps --all --quiet --filter name="$_item_inspect_ITEM")
+
+    if item_up "$_item_inspect_ITEM" up
+    then
+        _item_inspect_UP=true
+    else
+        _item_inspect_UP=false
+    fi
+
+    echo "$_item_inspect_ITEM is currently up? ($_item_inspect_UP)"
+    if [ -n "$CMD_JQ" ]
+    then
+        docker inspect "$_item_inspect_ID" | "$CMD_JQ"
+    else
+        docker inspect "$_item_inspect_ID"
+    fi
+}
+
+
+item_status() {
+    # ### TODO(spencer) we use docker ps --all and then check if it's up later
+    # ### ARGS
+    # - ITEM: An item to display status for
+    #
+    # ### Returns
+    # - Status: The status of the ITEM, or all (if the ITEM=all).
+    _item_status_ITEM="$1"
+
+    if [ "$_item_status_ITEM" = all ]
+    then
+        _item_status_ITEM="$ENABLED_ITEMS"
+    fi    
+
+    for ITEM in $_item_status_ITEM
+    do
+        _item_status_DESC="No description label for ${ITEM}."
+        _item_status_ID=$(docker ps --all --quiet --filter name="$ITEM")
+
+        if [ -n "$_item_status_ID" ]
+        then
+            mapfile -t -d, _item_status_LABLES < <(docker ps --all  --filter name="$ITEM" --format "{{.Labels}}")
+            _item_status_STATUS=$(docker ps --all  --filter name="$ITEM" --format "{{ .State }} ({{ .Status }})")
+
+            if [[ "$_item_status_STATUS" =~ running ]]
+            then
+                _item_status_STATUS="${GREENFG}${ITALICS} $_item_status_STATUS ${ENDCAP}"
+            fi
+
+            for LINE in "${_item_status_LABLES[@]}"
+            do
+                if [[ "$LINE" =~ ^org.opencontainers.image.description=(.*)$ ]]
+                then
+                    _item_status_DESC="${BOLD}${BASH_REMATCH[1]}${ENDCAP}"
+                fi
+            done
+
+            if [ -n "$CMD_CURL" ]
+            then
+                _item_status_URL="https://${ITEM}.${DOMAIN_NAME}"
+                _item_status_HTTP=$("$CMD_CURL" --location --max-time 3 --silent --write-out '%{response_code}' --output /dev/null "$_item_status_URL")
+                _item_status_URL="${UNDERLINE} https://${ITEM}.${DOMAIN_NAME} ${UNDERLINEOFF}"
+
+                if [ "$_item_status_HTTP" = 000 ]
+                then
+                    _item_status_HTTP="${REV} $_item_status_HTTP ${ENDCAP} ${BLACKBG}${ITALICS}(retry request, probably not yet ready)${ITALICSOFF}"
+
+                elif [ "$_item_status_HTTP" = 200 ]
+                then
+                    _item_status_HTTP="${GREENBG} $_item_status_HTTP ${ENDCAP}${ITALICS} OK ${ITALICSOFF}"
+
+                elif [ "$_item_status_HTTP" = 401 ]
+                then
+                    _item_status_HTTP="${GREENFG} $_item_status_HTTP ${ENDCAP}${ITALICS} Unauthorized ${ITALICSOFF}"
+
+                elif [ "$_item_status_HTTP" = 404 ]
+                then
+                    _item_status_HTTP="${REDFG}${UNDERLINE} $_item_status_HTTP ${ENDCAP}${ITALICS} Not Found ${ITALICSOFF}"
+
+                elif [[ "$_item_status_HTTP" =~ 40. ]]
+                then
+                    _item_status_HTTP="${REDBG}${ITALICS} $_item_status_HTTP ${ENDCAP}${ITALICS} Access Denied ${ITALICSOFF}"
+
+                elif [[ "$_item_status_HTTP" =~ 50. ]]
+                then
+                    _item_status_HTTP="${REDFG}${REV} $_item_status_HTTP ${ENDCAP} ${BLACKBG}${WHITEFG} Server Error !! ${ENDCAP}"
+                fi
+            else
+                _item_status_HTTP="$CMD_CURL not found in your PATH."
+            fi
+        fi
+
+        if ! item_up "$ITEM" up
+        then
+            UPDOWN="${REV}${UNDERLINE}down${ENDCAP}"
+            echo "${ITALICS}${UNDERLINE}$ITEM${ENDCAP} is curently $UPDOWN."
+        else
+            UPDOWN="${GREENFG}up${ENDCAP}"
+            echo "${ITALICS}${UNDERLINE}$ITEM${ENDCAP} is curently $UPDOWN."
+            echo -e "\t${BOLD}Status${ENDCAP}: $_item_status_STATUS"
+            echo -e "\t${BOLD}Description${ENDCAP}: $_item_status_DESC"
+            echo -e "\t${BOLD}HTTP URL${ENDCAP}: $_item_status_URL"
+            echo -e "\t${BOLD}HTTP Code${ENDCAP}: $_item_status_HTTP"
+         fi
+
+   done
+}
+
+
+item_update() {
+    # ### Args
+    # - ITEM: Updates the template for ITEM.
+    #
+    # ### Returns
+    # - Docker Files: Creates `ITEM/.env` and `ITEM/docker-compose.yaml`
+    # from the `TEMPLATE/` directory.
+    _item_update_ITEM="$1"
+
+    if [ "$_item_inspect_ITEM" = all ]
+    then
+        _item_up_ID="$ENABLED_ITEMS"
+    fi
+
+    for ITEM in $_item_update_ITEM
+    do
+        update_template "$ITEM"
+    done
+}
+
+
+item_info() {
+    # ### TODO(spencer) Make `item_info` useful, or kill it.
+    # ### ARGS
+    # - ITEM: Get info for an item.
+    #
+    # ### Returns
+    # - Info: Misc information about the item.
+    _item_info_ITEM="$1"
+
+    if [ "$_item_info_ITEM" = all ]
+    then
+        parse_config "$ITEM"
+        echo "Name: $NAME"
+        echo "Port: $PORT"
+        echo "Provider: ${PROVIDER/\//}"
+        echo "TAG: ${TAG/:/}"
+        echo "Enabled: $ENABLED"
+    fi
+}
+
+
+###############################################################################
+[ "$#" = 0 ] && get_help
+get_items
+
+if [[ "$1" =~ ^(-${DISABLED_ITEMS// /|})$ ]]
+then
+    echo "$1 is disabled, please enable it in 'global.conf' and try again"
+
+elif [[ "$1" =~ ^(all|${ENABLED_ITEMS// /|})$ ]]
+then
+    case "$2" in
+        up)
+            item_up "$1" ;;
+        down)
+            item_down "$1" ;;
+        restart)
+            item_restart "$1" ;;
+        pull)
+            item_pull "$1" ;;
+        inspect)
+            item_inspect "$1" ;;
+        status)
+            item_status "$1" ;;
+        update)
+            item_update "$1" ;;
+        info)
+            item_info "$1" ;;
+        *)
+            item_help "$1" ;;
+    esac
+else
+    get_help
+fi
+
+while getopts 'hr:u:zg:d:m' opts
+do
+    case "${opts}" in
+        r)
+            _ARGS="^(enabled|disabled|all)$"
+            if [[ "$OPTARG" =~ $_ARGS ]]
+            then
+                report_items "$OPTARG"
+            else
+                echo "Report Args: '$_ARGS'"
+                exit 0
+            fi
+        ;;
+        u)
+            update_template "$OPTARG" ;;
+        z)
+            true ;;
+        d)
+            parse_config "$OPTARG"
+            #docker compose -f "${NAME}/docker-compose.yaml" up -d
+        ;;
+        g)
+            # get item
+            parse_config "$OPTARG"
+            echo "Name $NAME"
+            echo "Port $PORT"
+            echo "Provider $PROVIDER"
+            echo "TAG $TAG"
+            echo "Enabled $ENABLED"
+        ;;
+        m)
+            $CMD_MAKE_DOCS "$0"
+            exit 0
+            ;;
+        *) 
+            get_help ;;
+    esac
+done

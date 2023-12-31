@@ -1,0 +1,84 @@
+secrets:
+  gcloud_auth:
+    file: $GCLOUD_AUTH # `chmod 0600`
+
+networks:
+  # Make sure these newtworks exists before runtime. `create-plex-stack-networks.sh`
+  plex_stack_proxy:
+    external: true
+  plex_stack_backend:
+    external: true
+      
+services:
+  traefik:
+    container_name: ${NAME}
+    hostname: ${NAME}
+    image: ${IMAGE}
+    restart: ${RESTART}
+    command:
+      - --global.sendanonymoususage=false
+      - --entryPoints.http.address=:80
+      - --entryPoints.https.address=:443
+      - --entryPoints.plex-server.address=:32400
+      - --entryPoints.plex-dlna.address=:32469
+      - --entryPoints.plex-dlna-udp.address=:1900/udp
+      - --entryPoints.plex-gdm1.address=:32410/udp
+      - --entryPoints.plex-gdm2.address=:32412/udp
+      - --entryPoints.plex-gdm3.address=:32413/udp
+      - --entryPoints.plex-gdm4.address=:32414/udp
+      - --api=true
+      - --api.dashboard=true
+      - --api.insecure=false
+      - --log.level=${TRAEFIK_LOG_LEVEL}
+      - --providers.docker=true
+      - --providers.docker.swarmmode=$SWARM_MODE # not in v3.0
+      - --providers.docker.endpoint=unix:///var/run/docker.sock
+      - --providers.docker.watch
+      - --providers.docker.exposedbydefault=true
+      - --providers.docker.network=proxy
+      - --providers.docker.defaultRule=Host(`${NAME}.${DOMAIN_NAME}`)
+      - --certificatesResolvers.le.acme.email=$ACME_EMAIL
+      - --certificatesResolvers.le.acme.dnsChallenge.provider=$ACME_PROVIDER
+      - --certificatesResolvers.le.acme.dnsChallenge.delayBeforeCheck=$ACME_DELAY
+      - --certificatesResolvers.le.acme.storage=$ACME_STORAGE
+      - --certificatesResolvers.le.acme.dnsChallenge.resolvers=$ACME_RESOLVERS
+      - --certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory # Uncomment while testing.
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - ./letsencrypt_dns-challenge:/letsencrypt
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      GCE_SERVICE_ACCOUNT_FILE: ${GCE_SERVICE_ACCOUNT_SECRETS_FILE} # gcloud_auth secret
+    labels:
+      traefik.http.routers.traefik.rule: "Host(`traefik.${DOMAIN_NAME}`)"
+      traefik.http.routers.traefik.service: "api@internal"
+      traefik.http.routers.traefik.middlewares: "traefik-auth"
+      traefik.http.middlewares.traefik-auth.basicauth.users: "${TRAEFIK_CREDENTIALS}"
+      traefik.http.routers.traefik.entrypoints: "https"
+      traefik.http.services.api-svc.loadbalancer.server.port: "443"
+      traefik.http.routers.http-catchall.rule: "hostregexp(`{host:.+}`)"
+      traefik.http.routers.http-catchall.entrypoints: "http"
+      traefik.http.routers.http-catchall.middlewares: "redirect-to-https"
+      traefik.http.middlewares.redirect-to-https.redirectscheme.scheme: "https"
+      traefik.http.routers.wildcard-certs.tls.domains[0].main: "*.${DOMAIN_NAME}"
+      traefik.http.routers.wildcard-certs.tls.domains[0].sans: "*.${DOMAIN_NAME}"
+      traefik.http.routers.wildcard-certs.tls.certresolver: "le"
+    ports:
+    - published: 80
+      target: 80
+      protocol: "tcp"
+      # this caused me 8 hours of pain! `mode:` was not defind and `ingress` didn't allow remote traffic.
+      mode: "$PORTS_MODE" 
+    - published: 443
+      protocol: "tcp"
+      mode: "$PORTS_MODE" 
+      target: 443
+
+    secrets:
+      - gcloud_auth
+    networks:
+      plex_stack_proxy:
+      plex_stack_backend:

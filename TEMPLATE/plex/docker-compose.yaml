@@ -1,0 +1,41 @@
+networks:
+  # Make sure this newtwork exists before runtime. `create-plex-stack-networks.sh`
+  plex_stack_backend:
+    external: true
+      
+services:
+  plex:
+    container_name: $NAME
+    hostname: $NAME
+    restart: $RESTART
+    image: $IMAGE
+    volumes:
+      - ${CONFIG_DIR}:/config
+      - ${CONTAINER_DATA_DIR}:/data
+      - ${MEDIA_DATA_DIR}:/media
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      PUID: $PUID
+      PGID: $PGID
+      TZ: $TZ
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "backend"
+      traefik.http.routers.plex.rule: "Host(`${NAME}.${DOMAIN_NAME}`)"
+      traefik.http.routers.plex.entrypoints: "https"
+      traefik.http.routers.plex.tls: "true"
+      traefik.http.routers.plex.tls.certresolver: "le"
+      traefik.tcp.routers.plex-server.entrypoints: "plex-server"
+      traefik.tcp.routers.plex-dlna.entrypoints: "plex-dlna"
+      traefik.udp.routers.plex-dlna.entrypoints: "plex-dlna-udp"
+      traefik.udp.routers.plex-gdm.entrypoints: "plex-gdm1, plex-gdm2, plex-gdm3, plex-gdm4"
+      # Proxy these ports
+      traefik.http.services.plex-server.loadbalancer.server.port: "32400"
+      traefik.tcp.services.plex-dlna.loadbalancer.server.port: "32469"
+      traefik.udp.services.plex-dlna-udp.loadbalancer.server.port: "1900"
+      traefik.udp.services.plex-gdm1.loadbalancer.server.port: "32410"
+      traefik.udp.services.plex-gdm2.loadbalancer.server.port: "32412"
+      traefik.udp.services.plex-gdm3.loadbalancer.server.port: "32413"
+      traefik.udp.services.plex-gdm4.loadbalancer.server.port: "32414"
+    networks:
+      plex_stack_backend:

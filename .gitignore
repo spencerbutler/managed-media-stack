@@ -1,0 +1,7 @@
+!TEMPLATE/.env
+**/letsencrypt_dns-challenge
+**/config
+**/data
+*/.env
+*/docker-compose.yaml
+global.conf
