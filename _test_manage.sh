@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Test functions for `manage.sh`
+# Test functions for `manage`
 # Spencer Butler <dev@tcos.us>
 
 RETURN_VAL=1
-TEST_SCRIPT=./manage.sh
+TEST_SCRIPT=./manage
 declare -A TESTS
 declare -A DEBUG
 SCORE=0
