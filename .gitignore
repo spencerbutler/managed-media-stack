@@ -1,4 +1,4 @@
-!TEMPLATE/.env
+!TEMPLATE/
 **/letsencrypt_dns-challenge
 **/config
 **/data
