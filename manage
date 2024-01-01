@@ -114,7 +114,7 @@ get_help() {
         fi
     else
         cat  << EOF
-The Plex Stack Manger
+The Media Stack Manger
 
 USAGE:
     $NAME -h      This help.
