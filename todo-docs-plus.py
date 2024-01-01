@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Create markdown todo's and function documentation from shell scripts.
+"""
+
+__author__ = "Spencer Butler"
+__email__ = "dev@tcos.us"
 
 import os
 import re

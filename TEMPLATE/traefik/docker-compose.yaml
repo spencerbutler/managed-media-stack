@@ -42,7 +42,7 @@ services:
       - --certificatesResolvers.le.acme.dnsChallenge.delayBeforeCheck=$ACME_DELAY
       - --certificatesResolvers.le.acme.storage=$ACME_STORAGE
       - --certificatesResolvers.le.acme.dnsChallenge.resolvers=$ACME_RESOLVERS
-      - --certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory # Uncomment while testing.
+      #- --certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory # Uncomment while testing, these are FAKE/testing certificates.
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /var/run/docker.sock:/var/run/docker.sock:rw

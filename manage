@@ -3,6 +3,7 @@
 # Manage the Media Stack.
 # Spencer Butler <dev@tcos.us>
 # TODO(spencer) Add version to the script
+# TODO(spencer) Add a starter config.ini for sabnzbd to avoid the missing `host_whitelist` entry for `DOMAIN_NAME`
 
 GLOBAL_CONF=global.conf
 if [ -f "$GLOBAL_CONF" ]
@@ -289,16 +290,8 @@ update_template() {
         _update_template_DIR=TEMPLATE
         if [[ "$ITEM" =~ ${_update_template_SPECIALS} ]]
         then
-            echo "$ITEM is a special template"
-            echo -e "\tThis feature is still a WiP."
-
             _update_template_DIR="${_update_template_DIR}/${ITEM}"
-            #if [ ! -d "$_update_template_DIR" ]
-            #then
-            #    echo -e "\tYou need to craft a special template for $ITEM"
-            #else
-            #    echo -e "\tYou have the $ITEM $_update_template_DIR dir, Still a WiP."
-            #fi
+            echo "$ITEM is a special template in ${_update_template_DIR}/."
         fi
 
         if parse_config "$ITEM"
@@ -396,6 +389,7 @@ item_up() {
             echo "$ITEM is currently up"
         else
             docker compose --file "${ITEM}/docker-compose.yaml" up --detach &
+            # TODO(spencer) Running docker in the background may not be desired, make this optionable.
         fi
     done
 }
@@ -550,7 +544,7 @@ item_status() {
 
                 if [ "$_item_status_HTTP" = 000 ]
                 then
-                    _item_status_HTTP="${REV} $_item_status_HTTP ${ENDCAP} ${BLACKBG}${ITALICS}(retry request, probably not yet ready)${ITALICSOFF}"
+                    _item_status_HTTP="${REV} $_item_status_HTTP ${ENDCAP} ${BLACKBG}${ITALICS}(retry request, probably not yet ready - or you are using test SSL certs.)${ENDCAP}"
 
                 elif [ "$_item_status_HTTP" = 200 ]
                 then
@@ -667,6 +661,7 @@ then
             item_help "$1" ;;
     esac
 else
+    # TODO(spencer) get_help should not run twice if 0 args were given.
     get_help
 fi
 
